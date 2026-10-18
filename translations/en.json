@@ -1,0 +1,144 @@
+{
+  "action": {
+    "add": "Add",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "fastest": "Fastest",
+    "ping-all": "Ping all",
+    "reset": "Reset",
+    "run-test": "Run test",
+    "save": "Save",
+    "start": "Start",
+    "stop": "Stop"
+  },
+  "editor": {
+    "address": "Address",
+    "alterid": "alterId",
+    "country": "Country code (for the flag)",
+    "edit": "Edit server",
+    "flow": "Flow",
+    "fp": "Fingerprint",
+    "host": "Host",
+    "keep": "leave empty to keep current",
+    "keyfile": "Key file",
+    "method": "Method",
+    "name": "Name",
+    "new": "New server",
+    "password": "Password",
+    "path": "Path",
+    "pbk": "Public key (pbk)",
+    "port": "Port",
+    "protocol": "Protocol",
+    "security": "Security",
+    "sid": "Short ID (sid)",
+    "sni": "SNI",
+    "transport": "Transport",
+    "user": "User",
+    "uuid": "UUID",
+    "wshost": "WS/HTTP Host"
+  },
+  "error": {
+    "clipboard": "Clipboard is empty",
+    "no-server": "No server selected"
+  },
+  "logs": {
+    "empty": "No logs yet",
+    "title": "Logs"
+  },
+  "notice": {
+    "tun": "TUN mode may prompt for administrator rights"
+  },
+  "panel": {
+    "alive": "alive",
+    "best": "best",
+    "connected": "Connected",
+    "connecting": "Connecting to the fastest server…",
+    "disconnected": "Disconnected",
+    "fallback-server-name": "Server",
+    "no-servers": "No servers configured",
+    "pinging": "Pinging servers…",
+    "routing": "Routing",
+    "servers": "Servers",
+    "sort-ping": "Sort by ping",
+    "starting": "Starting backend…",
+    "via": "Via"
+  },
+  "rules": {
+    "custom": "Custom rules",
+    "dns-check": "Check DNS",
+    "dns-hint": "DNS leak not checked yet",
+    "dns-leak": "DNS leak",
+    "dns-ok": "No DNS leak",
+    "killswitch": "Kill switch",
+    "killswitch-desc": "Block all traffic when the proxy is down",
+    "none": "No custom rules",
+    "presets": "Country presets",
+    "reset-servers": "Reset all servers",
+    "reset-servers-desc": "Remove every server. Rules and settings stay.",
+    "title": "Routing & rules"
+  },
+  "settings": {
+    "auto_failover": {
+      "description": "When the health check fails three times in a row, connect to the fastest reachable server",
+      "label": "Auto-failover"
+    },
+    "auto_start": {
+      "description": "Connect the active server automatically when the plugin loads",
+      "label": "Auto-connect on start"
+    },
+    "backend_python": {
+      "description": "Python 3 executable with the backend dependencies installed",
+      "label": "Backend Python"
+    },
+    "control_port": {
+      "description": "Localhost port for the backend HTTP control API",
+      "label": "Control port"
+    },
+    "geoip_country": {
+      "description": "Look up each server's country by IP to show its flag. Sends the server address to api.country.is.",
+      "label": "Detect server country"
+    },
+    "health_interval": {
+      "description": "Seconds between health checks of the connected server",
+      "label": "Health check interval (s)"
+    },
+    "ping_concurrency": {
+      "description": "How many servers are pinged in parallel by \"Ping all\"",
+      "label": "Ping concurrency"
+    },
+    "ping_count": {
+      "description": "Samples per health check (more samples = steadier jitter, slower)",
+      "label": "Ping samples"
+    },
+    "ping_method": {
+      "description": "\"TCP\" checks reachability of every server (works before connecting). \"HTTP\" sends a real request through the tunnel, which only measures the connected server.",
+      "http": "HTTP through the tunnel",
+      "label": "Ping method",
+      "tcp": "TCP connect"
+    },
+    "ping_timeout_ms": {
+      "description": "Per-probe timeout in milliseconds",
+      "label": "Ping timeout (ms)"
+    },
+    "ping_url": {
+      "description": "URL requested by the HTTP ping method",
+      "label": "Ping URL"
+    },
+    "show_ping": {
+      "label": "Show ping in bar"
+    },
+    "show_traffic": {
+      "label": "Show traffic in bar"
+    }
+  },
+  "shortcut": {
+    "off": "VPN Off",
+    "on": "VPN On"
+  },
+  "subs": {
+    "name": "Name (optional)",
+    "none": "No subscriptions",
+    "title": "Subscriptions"
+  },
+  "title": "VPN"
+}
