@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import ssl
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -57,6 +58,30 @@ async def tcp_ping(host: str, port: int, timeout: float = 5.0) -> Optional[int]:
         return latency_ms
     except (OSError, asyncio.TimeoutError):
         return None
+
+
+async def tls_handshake(host: str, port: int, sni: str, timeout: float = 5.0) -> bool:
+    """True if a TLS handshake with `sni` completes.
+
+    A bare TCP connect proves nothing about a TLS/REALITY node: some hosts accept
+    the connection and then never answer the ClientHello (seen on the whole
+    81.163.23.111 family — 14 ms TCP, dead tunnel), so the panel used to show a
+    green ping for servers that cannot carry a single byte.
+    """
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        fut = asyncio.open_connection(host, port, ssl=ctx, server_hostname=sni or host)
+        _, writer = await asyncio.wait_for(fut, timeout=timeout)
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (ConnectionError, OSError, ssl.SSLError):
+            pass
+        return True
+    except (OSError, asyncio.TimeoutError, ssl.SSLError, ValueError):
+        return False
 
 
 async def tcp_ping_samples(
@@ -135,6 +160,7 @@ async def ping_many(
     timeout: float = 3.0,
     concurrency: int = 16,
     on_result: Optional[Callable[[str, int], None]] = None,
+    tls_sni: Optional[dict[str, str]] = None,
 ) -> dict[str, int]:
     """TCP-ping many (id, host, port) endpoints concurrently.
 
@@ -142,9 +168,14 @@ async def ping_many(
     answered. `on_result` is called as each endpoint finishes so a UI can
     stream progress instead of waiting for the slowest one. Endpoints whose
     host failed to resolve (empty host) are reported as -1 right away.
+
+    `tls_sni` maps server_id → SNI for TLS/REALITY nodes: those additionally
+    have to complete a TLS handshake, otherwise the endpoint is reported as
+    dead even though TCP answered.
     """
     sem = asyncio.Semaphore(max(1, int(concurrency)))
     results: dict[str, int] = {}
+    tls_sni = tls_sni or {}
 
     def report(server_id: str, ms: int) -> None:
         results[server_id] = ms
@@ -159,6 +190,10 @@ async def ping_many(
             samples = await tcp_ping_samples(
                 host, port, count=max(1, int(count)), timeout=timeout, gap=0.1
             )
+            sni = tls_sni.get(server_id)
+            if samples and sni:
+                if not await tls_handshake(host, port, sni, timeout=max(timeout, 3.0)):
+                    samples = []
         report(server_id, int(round(sum(samples) / len(samples))) if samples else -1)
 
     pending = [e for e in endpoints if e[1]]

@@ -38,7 +38,7 @@ from backend.models.server import (
     server_to_dict,
     server_to_public_dict,
 )
-from backend.monitoring.health import HealthMonitor, ping_many, tcp_ping
+from backend.monitoring.health import HealthMonitor, ping_many, tcp_ping, tls_handshake
 from backend.service import tun_binary
 from backend.monitoring.log_streamer import LogStreamer
 from backend.monitoring.traffic import TrafficMonitor
@@ -295,7 +295,23 @@ class VpnService:
         if not host:
             return -1
         latency = await tcp_ping(host, port, timeout=5.0)
+        if latency is not None:
+            sni = self._tls_sni(server)
+            if sni and not await tls_handshake(host, port, sni, timeout=5.0):
+                return -1
         return latency if latency is not None else -1
+
+    @staticmethod
+    def _tls_sni(server) -> Optional[str]:
+        """SNI to validate a node's TLS handshake, or None for plain nodes.
+
+        TCP reachability alone is not enough: a TLS/REALITY endpoint can accept
+        the connection and never answer the ClientHello, which looks like a
+        perfect 14 ms ping and carries no traffic.
+        """
+        if getattr(server, "tls", False):
+            return getattr(server, "sni", None) or getattr(server, "address", None)
+        return None
 
     def default_endpoint(self, server: Server) -> tuple[Optional[str], int]:
         """Public (host, port) for a server, across every protocol."""
@@ -310,9 +326,13 @@ class VpnService:
         """
         settings = self.state.settings
         endpoints: list[tuple[str, str, int]] = []
+        tls_sni: dict[str, str] = {}
         for s in list(self.state.servers):
             host, port = self._server_endpoint(s)
             endpoints.append((s.id, host or "", int(port or 0)))
+            sni = self._tls_sni(s)
+            if sni and host:
+                tls_sni[s.id] = sni
         timeout = max(0.2, float(settings.pingTimeoutMs or 3000) / 1000.0)
         concurrency = max(1, min(64, int(settings.pingConcurrency or 16)))
         self._log(
@@ -328,6 +348,7 @@ class VpnService:
             on_result=lambda sid, ms: self.state.emit_ping(
                 {"id": sid, "latency_ms": ms, "done": False}
             ),
+            tls_sni=tls_sni,
         )
         self._last_pings = results
         self._last_pings_at = time.time()
