@@ -6,7 +6,7 @@ the plugin data directory as <PREFIX>-{transport,rules,global,tun}.json.
 Architecture (as proven by reference noctalia-rules.json / noctalia-global.json):
 
   Transport layer   → port 11080  (talks to remote VPN server)
-  Rules mux         → port 11081  (refilter rules → proxy, rest → direct)
+  Rules mux         → port 11081  (roblox + local .ru → direct, rest → proxy)
   Global mux        → port 11082  (everything → proxy)
   TUN               → tun device; outbound = socks5 → 11081 or 11082
 
@@ -34,9 +34,58 @@ RULES_DB = CONFIG_DIR / f"{PREFIX}-rules.db"
 
 DEFAULT_LOG = {"level": "info", "timestamp": True}
 
-PROXY_DNS_ADDR = "8.8.8.8"
-DIRECT_DNS_ADDR = "223.5.5.5"
+PROXY_DNS_ADDR = "9.9.9.9"
+DIRECT_DNS_ADDR = "9.9.9.9"
 TUN_DNS_SERVER_NAME = "dns.google"
+# Why Quad9 for both: sing-box resolves the destination of an outbound connection
+# through `route.default_domain_resolver`, which *ignores* dns.rules.  Google
+# (8.8.8.8), AliDNS (223.5.5.5) and Cloudflare (1.1.1.1) all answer
+# `tr.rbxcdn.com` with a bare CNAME and no A record → "lookup tr.rbxcdn.com:
+# empty result" → no Roblox icons.  Quad9 returns the real CloudFront/Akamai IPs.
+
+# ---- Roblox bypass -----------------------------------------------------------
+# Roblox is inside the Re-filter "ru" list (roblox.com / rbxcdn.com), so as soon
+# as a preset is active both roblox traffic and its DNS went through the tunnel:
+# the client lost its icons (8.8.8.8, AliDNS, Cloudflare and Google all answer
+# tr.rbxcdn.com with a bare CNAME, no A record) and got a foreign exit IP.
+# Roblox works fine directly on this network, so pin it to 'direct' ahead of
+# every preset/custom rule and give it a resolver that actually answers.
+# Set ROBLOX_BYPASS = False to go back to "everything through the tunnel".
+ROBLOX_BYPASS = True
+ROBLOX_DOMAIN_SUFFIXES = [
+    "roblox.com",      # www/apis/assetdelivery/thumbnails/gamejoin/clientsettings
+    "robloxlabs.com",
+    "roblox.cn",
+    "rbxcdn.com",      # tr./c0-c9./sc5. … thumbnails & assets
+    "rbxtrk.com",
+    "rbx.com",
+]
+ROBLOX_IP_CIDRS = [
+    "128.116.0.0/17",   # AS22697 aggregate (API + game servers)
+    "103.140.28.0/23",
+    "141.193.3.0/24",
+    "205.201.62.0/24",
+]
+ROBLOX_DNS_ADDR = "9.9.9.9"      # Quad9 — the only one that resolves trns1.rbxcdn.com
+ROBLOX_DNS_TAG = "roblox-dns"
+QUAD9_DOH_NAME = "dns.quad9.net"
+# Local sites that stay outside the tunnel in rules mode (.рф = xn--p1ai).
+LOCAL_DIRECT_SUFFIXES = [".ru", ".su", ".xn--p1ai"]
+
+
+def roblox_route_rules() -> list[dict[str, Any]]:
+    """Route rules that keep Roblox out of the tunnel (placed first)."""
+    if not ROBLOX_BYPASS:
+        return []
+    return [
+        {"domain_suffix": list(ROBLOX_DOMAIN_SUFFIXES), "outbound": "direct"},
+        {"ip_cidr": list(ROBLOX_IP_CIDRS), "outbound": "direct"},
+    ]
+
+
+def roblox_dns_rule(server_tag: str = ROBLOX_DNS_TAG) -> dict[str, Any]:
+    """DNS rule for Roblox domains — must stay ahead of the proxy-dns preset rule."""
+    return {"domain_suffix": list(ROBLOX_DOMAIN_SUFFIXES), "server": server_tag}
 
 
 def _dns_rules_from_user(rules: list) -> list[dict]:
@@ -98,6 +147,16 @@ def _build_dns_rules(
         },
     ]
     rules = _dns_rules_from_user(custom_rules)
+    if ROBLOX_BYPASS:
+        servers.append(
+            {
+                "type": "udp",
+                "tag": ROBLOX_DNS_TAG,
+                "server": ROBLOX_DNS_ADDR,
+                "server_port": 53,
+            }
+        )
+        rules.insert(0, roblox_dns_rule())
     if not default_proxy:
         dom_tags = preset_domain_tags(active_presets or [])
         if dom_tags:
@@ -179,6 +238,10 @@ def build_rules_config(
     custom_rules = custom_rules or []
     active_presets = list(active_presets or [])
 
+    # Roblox first: it is in the "ru" preset list, and both its traffic and its
+    # DNS must stay outside the tunnel (see the constants above).
+    rules.extend(roblox_route_rules())
+
     for r in custom_rules:
         if not r.enabled:
             continue
@@ -188,12 +251,21 @@ def build_rules_config(
 
     rules.extend(preset_route_rules(active_presets))
 
+    # Local Russian sites stay direct even though everything else is tunneled:
+    # banks and Gosuslugi dislike foreign exit IPs.  Placed after the preset
+    # rules, so a blocked .ru domain still gets proxied.  Roblox rules are at
+    # the very top and win over this one.
+    rules.append({"domain_suffix": LOCAL_DIRECT_SUFFIXES, "outbound": "direct"})
+
     rule_set = preset_rule_sets(active_presets)
 
     route: dict[str, Any] = {
-        "final": "direct",
+        # Default is the tunnel: unmatched (and unknown-to-the-lists) traffic must
+        # not fall through to "direct", or blocked sites (YouTube, Instagram …)
+        # silently go into the ISP filter while the UI claims the VPN is on.
+        "final": "proxy",
         "auto_detect_interface": True,
-        "default_domain_resolver": "direct-dns",
+        "default_domain_resolver": "proxy-dns",
         "rules": rules,
     }
     if rule_set:
@@ -201,7 +273,7 @@ def build_rules_config(
 
     return {
         "log": DEFAULT_LOG,
-        "dns": _build_dns_rules(custom_rules, active_presets, default_proxy=False),
+        "dns": _build_dns_rules(custom_rules, active_presets, default_proxy=True),
         "experimental": {
             "cache_file": {"enabled": True, "path": str(RULES_DB)},
             "clash_api": {"external_controller": f"127.0.0.1:{clash_api_port}"},
@@ -260,6 +332,7 @@ def build_global_config(
             {"type": "direct", "tag": "direct"},
         ],
         "route": {
+            "rules": roblox_route_rules(),
             "final": "proxy",
             "auto_detect_interface": True,
             "default_domain_resolver": "proxy-dns",
@@ -301,23 +374,42 @@ def build_tun_config(
     if route_exclude_addresses:
         tun_inbound["route_exclude_address"] = route_exclude_addresses
 
+    dns_servers: list[dict[str, Any]] = [
+        {
+            "type": "https",
+            "tag": "tun-dns",
+            "server": PROXY_DNS_ADDR,
+            "server_port": 443,
+            "path": "/dns-query",
+            "tls": {
+                "enabled": True,
+                "server_name": TUN_DNS_SERVER_NAME,
+            },
+            "detour": "proxy",
+        }
+    ]
+    dns_rules: list[dict[str, Any]] = []
+    if ROBLOX_BYPASS:
+        # Quad9 over the tunnel — the default tun-dns (8.8.8.8) answers
+        # tr.rbxcdn.com with a bare CNAME, which is what broke the icons.
+        dns_servers.append(
+            {
+                "type": "https",
+                "tag": ROBLOX_DNS_TAG,
+                "server": ROBLOX_DNS_ADDR,
+                "server_port": 443,
+                "path": "/dns-query",
+                "tls": {"enabled": True, "server_name": QUAD9_DOH_NAME},
+                "detour": "proxy",
+            }
+        )
+        dns_rules.append(roblox_dns_rule())
+
     return {
         "log": DEFAULT_LOG,
         "dns": {
-            "servers": [
-                {
-                    "type": "https",
-                    "tag": "tun-dns",
-                    "server": PROXY_DNS_ADDR,
-                    "server_port": 443,
-                    "path": "/dns-query",
-                    "tls": {
-                        "enabled": True,
-                        "server_name": TUN_DNS_SERVER_NAME,
-                    },
-                    "detour": "proxy",
-                }
-            ],
+            "servers": dns_servers,
+            "rules": dns_rules,
             "final": "tun-dns",
             "strategy": "ipv4_only",
         },
@@ -335,10 +427,14 @@ def build_tun_config(
         "route": {
             "rules": [
                 {"action": "sniff"},
+                *roblox_route_rules(),
                 {"protocol": "dns", "action": "hijack-dns"},
                 {"ip_is_private": True, "outbound": "direct"},
             ],
             "final": "proxy",
             "auto_detect_interface": True,
+            # sing-box >= 1.12 fails to start without this ("missing
+            # route.default_domain_resolver ... is deprecated").
+            "default_domain_resolver": "tun-dns",
         },
     }
