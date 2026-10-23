@@ -67,6 +67,7 @@ def _build_handlers() -> dict[str, Callable[[VpnService, list], Any]]:
         "StopProxy": lambda s, a: s.stop_proxy(),
         "GetStatus": lambda s, a: s.get_status(),
         "GetHealth": lambda s, a: s.get_health(),
+        "CheckProxy": lambda s, a: s.check_proxy(),
         "GetTrafficStats": lambda s, a: s.get_traffic_stats(),
         "CheckDnsLeak": lambda s, a: s.check_dns_leak(),
         "RunSpeedTest": lambda s, a: s.run_speed_test(),

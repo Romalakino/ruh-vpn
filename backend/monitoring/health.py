@@ -477,3 +477,88 @@ class HealthMonitor:
                 await self.check_now()
         except asyncio.CancelledError:
             return
+
+
+class TunnelMonitor:
+    """End-to-end probe of the live tunnel through the local SOCKS port.
+
+    TCP (and even TLS) reachability of the node's address proves nothing about
+    the tunnel itself: a node whose transport is misconfigured (e.g. gRPC
+    expected while the config speaks plain TCP) completes the handshake and
+    then answers with binary garbage — browsers die with
+    SSL_ERROR_RX_UNKNOWN_RECORD_TYPE while every ping stays green.
+
+    The only honest check is the request a browser would make, so this monitor
+    drives an HTTP GET through the mux port the system proxy points at.
+    """
+
+    FAIL_THRESHOLD = 2
+
+    def __init__(
+        self,
+        proxy_url: str,
+        url: str = DEFAULT_PING_URL,
+        interval: float = 25.0,
+        timeout: float = 8.0,
+        on_failed: Optional[Callable[[], Awaitable[None]]] = None,
+        fail_threshold: Optional[int] = None,
+    ) -> None:
+        self.proxy_url = proxy_url
+        self.url = url or DEFAULT_PING_URL
+        self.interval = max(5.0, float(interval))
+        self.timeout = max(1.0, float(timeout))
+        self.fail_threshold = max(1, int(fail_threshold or self.FAIL_THRESHOLD))
+        self._on_failed = on_failed
+        self._task: Optional[asyncio.Task] = None
+        self._failed_emitted = False
+        self.latency_ms = -1
+        self.consecutive_failures = 0
+        self.last_check = 0.0
+
+    async def check_now(self) -> Optional[int]:
+        ms = await http_ping(self.url, proxy_url=self.proxy_url, timeout=self.timeout)
+        self.last_check = time.time()
+        if ms is None:
+            self.consecutive_failures += 1
+            if (
+                self.consecutive_failures >= self.fail_threshold
+                and not self._failed_emitted
+                and self._on_failed is not None
+            ):
+                self._failed_emitted = True
+                try:
+                    await self._on_failed()
+                except Exception:
+                    pass
+            return None
+        self.latency_ms = int(ms)
+        self.consecutive_failures = 0
+        self._failed_emitted = False
+        return int(ms)
+
+    def start(self) -> None:
+        if self._task and not self._task.done():
+            return
+        self._failed_emitted = False
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    async def _loop(self) -> None:
+        try:
+            # Let a freshly started tunnel settle, then probe.
+            await asyncio.sleep(1.5)
+            await self.check_now()
+            while True:
+                await asyncio.sleep(self.interval)
+                await self.check_now()
+        except asyncio.CancelledError:
+            return

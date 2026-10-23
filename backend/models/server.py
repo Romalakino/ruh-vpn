@@ -184,7 +184,7 @@ class Settings(BaseModel):
     pingTimeoutMs: int = 3000
     pingCount: int = 4
     pingConcurrency: int = 16
-    autoFailover: bool = False
+    autoFailover: bool = True
 
 
 class StatusInfo(BaseModel):

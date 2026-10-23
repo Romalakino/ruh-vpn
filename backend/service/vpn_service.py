@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import shutil
 import socket
 import subprocess
@@ -38,7 +39,15 @@ from backend.models.server import (
     server_to_dict,
     server_to_public_dict,
 )
-from backend.monitoring.health import HealthMonitor, ping_many, tcp_ping, tls_handshake
+from backend.monitoring.health import (
+    HealthMonitor,
+    TunnelMonitor,
+    http_ping,
+    ping_many,
+    tcp_ping,
+    tls_handshake,
+)
+from backend.paths import RUNTIME_DIR
 from backend.service import tun_binary
 from backend.monitoring.log_streamer import LogStreamer
 from backend.monitoring.traffic import TrafficMonitor
@@ -83,6 +92,14 @@ class VpnService:
         self._last_pings_at: float = 0.0
         self._ping_job: Optional[asyncio.Task] = None
         self._connect_job: Optional[asyncio.Task] = None
+        # End-to-end probe of the running tunnel (the one that catches a node
+        # which answers TCP/TLS but hands back garbage instead of TLS).
+        self._tunnel: Optional[TunnelMonitor] = None
+        # Nodes that failed the end-to-end probe: {server_id: expiry epoch}.
+        # Persisted so a bad node is not re-picked by "fastest" after a restart.
+        self._bad_nodes: dict[str, float] = {}
+        self._failover_job: Optional[asyncio.Task] = None
+        self._failover_active = False
         # Latched once getcap confirms CAP_NET_ADMIN on the plugin-private
         # sing-box copy, so subsequent TUN starts never re-prompt via pkexec.
         # Reset whenever the copy is rewritten (a fresh file has no caps).
@@ -101,6 +118,7 @@ class VpnService:
         self.state.servers = await load_servers()
         self.state.rules = await load_rules()
         self.state.settings = await load_settings()
+        self._load_bad_nodes()
         await self._subs.bootstrap()
         self._subs.start_auto_update()
         self._update_status_basics()
@@ -115,6 +133,9 @@ class VpnService:
         asyncio.create_task(self.backfill_countries())
 
     async def shutdown(self) -> None:
+        if self._tunnel:
+            await self._tunnel.stop()
+            self._tunnel = None
         if self._health:
             await self._health.stop()
             self._health = None
@@ -150,6 +171,9 @@ class VpnService:
             if was_running:
                 await self._stop_locked(reason="switch server", clear_active=False)
             self.state.settings.activeServerId = server_id
+            # An explicit user pick overrides the bad-node memory: try it again,
+            # and let the post-connect probe re-mark it if it is still broken.
+            self._unmark_bad(server_id)
             await save_settings(self.state.settings)
             self._update_status_basics()
             if was_running:
@@ -394,6 +418,8 @@ class VpnService:
         best_id, best_ms = None, None
         for sid, ms in (self._last_pings or {}).items():
             if ms is None or ms < 0:
+                continue
+            if self._is_bad(sid):
                 continue
             if best_ms is None or ms < best_ms:
                 best_id, best_ms = sid, ms
@@ -694,6 +720,12 @@ class VpnService:
         # arm health monitor
         await self._arm_health_monitor(server)
 
+        # arm the end-to-end probe (and verify this fresh node right away):
+        # a node can answer TCP and TLS and still hand back garbage, which only
+        # a real request through the tunnel catches.
+        await self._arm_tunnel_monitor()
+        asyncio.create_task(self._verify_after_start(server_id))
+
         # arm traffic monitor
         if self._traffic:
             await self._traffic.stop()
@@ -709,6 +741,9 @@ class VpnService:
 
     async def _stop_locked(self, *, reason: str, clear_active: bool = True) -> bool:
         self._log("info", f"stopping proxy ({reason})")
+        if self._tunnel:
+            await self._tunnel.stop()
+            self._tunnel = None
         if self._health:
             await self._health.stop()
             self._health = None
@@ -735,6 +770,9 @@ class VpnService:
             return
         self._teardown_in_progress = True
         try:
+            if self._tunnel:
+                await self._tunnel.stop()
+                self._tunnel = None
             if self._health:
                 await self._health.stop()
                 self._health = None
@@ -804,26 +842,212 @@ class VpnService:
         if server is None:
             return
         await self._arm_health_monitor(server)
+        await self._arm_tunnel_monitor()
 
     async def _on_health_failed(self) -> None:
         self._log("error", "health check failed 3 times in a row")
-        if self.state.settings.autoFailover and self.state.status.running:
-            self._log("info", "auto-failover: switching to the fastest reachable server")
+        await self._on_tunnel_failed("health check failed")
+
+    # ---------------- end-to-end tunnel check + auto-failover
+
+    # A node that failed the end-to-end probe stays out of "fastest" this long.
+    BAD_NODE_TTL = 6 * 3600.0
+
+    def _bad_nodes_path(self) -> Path:
+        return RUNTIME_DIR / "bad_nodes.json"
+
+    def _load_bad_nodes(self) -> None:
+        self._bad_nodes = {}
+        try:
+            raw = json.loads(self._bad_nodes_path().read_text())
+        except (OSError, ValueError):
+            return
+        now = time.time()
+        for key, value in (raw or {}).items():
             try:
-                await self.connect_fastest(
-                    self.state.settings.mode, self.state.settings.proxyMode
-                )
-                self.state.emit_notice({
-                    "level": "info",
-                    "title": "Ruh VPN",
-                    "body": "Auto-failover: connected to a faster reachable server",
-                })
-                return
+                expiry = float(value)
+            except (TypeError, ValueError):
+                continue
+            if expiry > now:
+                self._bad_nodes[str(key)] = expiry
+
+    def _save_bad_nodes(self) -> None:
+        try:
+            self._bad_nodes_path().write_text(json.dumps(self._bad_nodes))
+        except OSError:
+            pass
+
+    def _is_bad(self, server_id: str) -> bool:
+        expiry = self._bad_nodes.get(server_id)
+        if expiry is None:
+            return False
+        if expiry <= time.time():
+            self._bad_nodes.pop(server_id, None)
+            self._save_bad_nodes()
+            return False
+        return True
+
+    def _mark_bad(self, server_id: str) -> None:
+        if not server_id:
+            return
+        self._bad_nodes[server_id] = time.time() + self.BAD_NODE_TTL
+        self._save_bad_nodes()
+
+    def _unmark_bad(self, server_id: str) -> None:
+        if self._bad_nodes.pop(server_id, None) is not None:
+            self._save_bad_nodes()
+
+    def _mux_port(self) -> Optional[int]:
+        if not self.state.status.running:
+            return None
+        s = self.state.settings
+        return int(s.rulesPort if s.mode == "rules" else s.globalPort)
+
+    async def _probe_tunnel(self, timeout: float = 8.0) -> Optional[int]:
+        """One real request through the tunnel; ms on success, None on failure."""
+        port = self._mux_port()
+        if not port:
+            return None
+        return await http_ping(
+            self.state.settings.pingUrl,
+            proxy_url=f"socks5://127.0.0.1:{port}",
+            timeout=timeout,
+        )
+
+    async def _probe_ok(self, attempts: int = 2) -> bool:
+        total = max(1, int(attempts))
+        for i in range(total):
+            if await self._probe_tunnel() is not None:
+                return True
+            if i + 1 < total:
+                await asyncio.sleep(1.0)
+        return False
+
+    async def check_proxy(self) -> dict:
+        """On-demand end-to-end check of the running tunnel."""
+        if not self.state.status.running:
+            return {
+                "ok": False,
+                "latency_ms": -1,
+                "muxPort": None,
+                "reason": "proxy is not running",
+            }
+        ms = await self._probe_tunnel()
+        return {
+            "ok": ms is not None,
+            "latency_ms": int(ms) if ms is not None else -1,
+            "muxPort": self._mux_port(),
+            "reason": "" if ms is not None else "no answer through the tunnel",
+        }
+
+    async def _arm_tunnel_monitor(self) -> None:
+        if self._tunnel:
+            await self._tunnel.stop()
+            self._tunnel = None
+        port = self._mux_port()
+        if not port:
+            return
+        s = self.state.settings
+        self._tunnel = TunnelMonitor(
+            proxy_url=f"socks5://127.0.0.1:{port}",
+            url=s.pingUrl,
+            interval=max(10.0, float(s.healthCheckIntervalSec)),
+            timeout=8.0,
+            on_failed=lambda: self._on_tunnel_failed("tunnel probe failed"),
+        )
+        self._tunnel.start()
+
+    async def _verify_after_start(self, server_id: str) -> None:
+        """Fail fast when a freshly started node carries no traffic."""
+        await asyncio.sleep(1.0)
+        if self._failover_active or not self.state.status.running:
+            return
+        if self.state.settings.activeServerId != server_id:
+            return
+        if await self._probe_ok(attempts=2):
+            return
+        self._log("warn", f"node {server_id} answers TCP but carries no traffic")
+        await self._on_tunnel_failed("post-connect probe failed")
+
+    async def _on_tunnel_failed(self, reason: str) -> None:
+        if not self.state.status.running:
+            return
+        if not self.state.settings.autoFailover:
+            self.state.status.status = "error"
+            self.state.status.reason = "tunnel_unreachable"
+            self.state.status.message = "Туннель не пропускает трафик"
+            self.state.emit_status()
+            return
+        if self._failover_job and not self._failover_job.done():
+            return
+        self._log("warn", f"tunnel check failed ({reason}); starting failover")
+        self._failover_job = asyncio.create_task(self._failover_guarded(reason))
+
+    async def _next_candidate(self, tried: set[str]) -> Optional[str]:
+        if not self._last_pings or (time.time() - self._last_pings_at) > 120.0:
+            try:
+                await self.ping_all()
             except Exception as exc:
-                self._log("error", f"auto-failover failed: {exc}")
-        self.state.status.status = "error"
-        self.state.status.reason = "health_check_failed"
-        self.state.emit_status()
+                self._log("error", f"failover: ping sweep failed: {exc}")
+        best_id, best_ms = None, None
+        for sid, ms in (self._last_pings or {}).items():
+            if sid in tried or ms is None or ms < 0 or self._is_bad(sid):
+                continue
+            if best_ms is None or ms < best_ms:
+                best_id, best_ms = sid, ms
+        return best_id
+
+    async def _failover_guarded(self, reason: str) -> None:
+        """Move to the next reachable node that actually passes traffic."""
+        self._failover_active = True
+        try:
+            async with self.state.lock:
+                if not self.state.status.running:
+                    return
+                mode = self.state.settings.mode
+                proxy_mode = self.state.settings.proxyMode
+                current = self.state.settings.activeServerId or ""
+                if current:
+                    self._mark_bad(current)
+                    self._log("warn", f"failover ({reason}): node {current} marked bad")
+                tried: set[str] = {current} if current else set()
+                for _ in range(3):
+                    cand = await self._next_candidate(tried)
+                    if not cand:
+                        break
+                    tried.add(cand)
+                    server = self.state.get_server(cand)
+                    name = getattr(server, "name", None) or cand
+                    self._log("info", f"failover: trying {name} ({cand})")
+                    await self._stop_locked(reason="failover", clear_active=False)
+                    ok = await self._start_locked(cand, mode, proxy_mode)
+                    if ok and await self._probe_ok(attempts=2):
+                        self._unmark_bad(cand)
+                        self._log("info", f"failover: connected to {name}")
+                        self.state.emit_notice({
+                            "level": "info",
+                            "title": "Ruh VPN",
+                            "body": f"Переключился на {name}",
+                        })
+                        return
+                    self._mark_bad(cand)
+                    if ok:
+                        await self._stop_locked(
+                            reason="failover: probe failed", clear_active=False
+                        )
+                self.state.status.status = "error"
+                self.state.status.reason = "failover_exhausted"
+                self.state.status.message = "Нет рабочего сервера"
+                self.state.emit_status()
+                self.state.emit_notice({
+                    "level": "error",
+                    "title": "Ruh VPN",
+                    "body": "Ни один узел не пропускает трафик",
+                })
+        except Exception as exc:
+            self._log("error", f"failover crashed: {exc}")
+        finally:
+            self._failover_active = False
 
     # ---------------- subscriptions
 
