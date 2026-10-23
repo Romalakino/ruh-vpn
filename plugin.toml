@@ -96,7 +96,7 @@ key            = "auto_failover"
 type           = "bool"
 label_key      = "settings.auto_failover.label"
 description_key = "settings.auto_failover.description"
-default        = false
+default        = true
 
 [[setting]]
 key            = "control_port"

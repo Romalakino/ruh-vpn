@@ -5,10 +5,10 @@
 -- through named global callbacks. ui.input is uncontrolled (value seeds once,
 -- edits flow through onChange into the module-level `form` table).
 
-local MAX_ROWS  = 20          -- clickable server rows
+local MAX_ROWS  = 64          -- clickable server rows (pool below is generated)
 local MAX_PRE   = 8           -- preset toggles
-local MAX_RULE  = 20          -- custom rule rows
-local MAX_SUB   = 12          -- subscription rows
+local MAX_RULE  = 64          -- custom rule rows
+local MAX_SUB   = 32          -- subscription rows
 local nonce     = 0
 
 local view      = "main"
@@ -43,11 +43,16 @@ local RULE_TYPES = { "force-proxy", "direct", "block" }
 -- The fixed olive/chartreuse palette gives the plugin its own visual identity.
 local T = {
   bg         = "#1b1c17",
-  card       = "#26271f",
-  cardHi     = "#2e2f25",
-  cardActive = "#34362a",
-  border     = "#33342a",
-  borderSoft = "#2a2b22",
+  -- Glass: card surfaces are theme roles carrying an alpha suffix (a plain hex
+  -- cannot hold alpha here), so the blurred panel backdrop shows through them.
+  -- `cardBase` is the opaque hex twin of `card`, used where a colour still has
+  -- to be flattened against a solid base (protocol pills, hero halo).
+  card       = "surface_variant/0.45",
+  cardBase   = "#26271f",
+  cardHi     = "surface_variant/0.65",
+  cardActive = "surface_variant/0.80",
+  border     = "on_surface/0.22",
+  borderSoft = "on_surface/0.15",
   accent     = "#cfe04e",
   accentText = "#1b1c17",
   text       = "#e8e7df",
@@ -112,7 +117,7 @@ local function protoTag(proto)
   local label = PROTO_LABEL[(proto or ""):lower()]
   if not label then return nil end
   local tag = PROTO_TAG[label]
-  return ui.row({ fill = mix(tag.fg, T.card, tag.a), radius = 4, paddingH = 6, align = "center" }, {
+  return ui.row({ fill = mix(tag.fg, T.cardBase, tag.a), radius = 4, paddingH = 6, align = "center" }, {
     ui.label({ text = label:upper(), color = tag.fg, fontSize = 10, fontWeight = "bold" }),
   })
 end
@@ -346,8 +351,8 @@ local function mainView()
       -- ── status hero card ──────────────────────────────────────
       ui.row({ gap = 14, align = "center", fill = T.card, radius = 14,
                border = T.borderSoft, borderWidth = 1, paddingH = 16, paddingV = 14 }, {
-        ui.row({ fill = mix(heroColor, T.card, 0.14), radius = 12,
-                 border = mix(heroColor, T.card, 0.28), borderWidth = 1,
+        ui.row({ fill = mix(heroColor, T.cardBase, 0.14), radius = 12,
+                 border = mix(heroColor, T.cardBase, 0.28), borderWidth = 1,
                  paddingH = 10, paddingV = 10, align = "center" }, {
           ui.glyph({ name = heroGlyph, size = 22, color = heroColor }),
         }),
@@ -866,121 +871,94 @@ local function onDelAt(slot)
 end
 
 -- ── fixed handler pools (host resolves onClick by global name) ───
-function onServer0()  onServerAt(0)  end
-function onServer1()  onServerAt(1)  end
-function onServer2()  onServerAt(2)  end
-function onServer3()  onServerAt(3)  end
-function onServer4()  onServerAt(4)  end
-function onServer5()  onServerAt(5)  end
-function onServer6()  onServerAt(6)  end
-function onServer7()  onServerAt(7)  end
-function onServer8()  onServerAt(8)  end
-function onServer9()  onServerAt(9)  end
-function onServer10() onServerAt(10) end
-function onServer11() onServerAt(11) end
-function onServer12() onServerAt(12) end
-function onServer13() onServerAt(13) end
-function onServer14() onServerAt(14) end
-function onServer15() onServerAt(15) end
-function onServer16() onServerAt(16) end
-function onServer17() onServerAt(17) end
-function onServer18() onServerAt(18) end
-function onServer19() onServerAt(19) end
+-- One global per slot: the host looks callbacks up by name, and a global
+-- written through _G is invisible to it, so these stay plain declarations.
 
-function onEdit0()  onEditAt(0)  end
-function onEdit1()  onEditAt(1)  end
-function onEdit2()  onEditAt(2)  end
-function onEdit3()  onEditAt(3)  end
-function onEdit4()  onEditAt(4)  end
-function onEdit5()  onEditAt(5)  end
-function onEdit6()  onEditAt(6)  end
-function onEdit7()  onEditAt(7)  end
-function onEdit8()  onEditAt(8)  end
-function onEdit9()  onEditAt(9)  end
-function onEdit10() onEditAt(10) end
-function onEdit11() onEditAt(11) end
-function onEdit12() onEditAt(12) end
-function onEdit13() onEditAt(13) end
-function onEdit14() onEditAt(14) end
-function onEdit15() onEditAt(15) end
-function onEdit16() onEditAt(16) end
-function onEdit17() onEditAt(17) end
-function onEdit18() onEditAt(18) end
-function onEdit19() onEditAt(19) end
+function onServer0() onServerAt(0) end  function onServer1() onServerAt(1) end  function onServer2() onServerAt(2) end  function onServer3() onServerAt(3) end
+function onServer4() onServerAt(4) end  function onServer5() onServerAt(5) end  function onServer6() onServerAt(6) end  function onServer7() onServerAt(7) end
+function onServer8() onServerAt(8) end  function onServer9() onServerAt(9) end  function onServer10() onServerAt(10) end  function onServer11() onServerAt(11) end
+function onServer12() onServerAt(12) end  function onServer13() onServerAt(13) end  function onServer14() onServerAt(14) end  function onServer15() onServerAt(15) end
+function onServer16() onServerAt(16) end  function onServer17() onServerAt(17) end  function onServer18() onServerAt(18) end  function onServer19() onServerAt(19) end
+function onServer20() onServerAt(20) end  function onServer21() onServerAt(21) end  function onServer22() onServerAt(22) end  function onServer23() onServerAt(23) end
+function onServer24() onServerAt(24) end  function onServer25() onServerAt(25) end  function onServer26() onServerAt(26) end  function onServer27() onServerAt(27) end
+function onServer28() onServerAt(28) end  function onServer29() onServerAt(29) end  function onServer30() onServerAt(30) end  function onServer31() onServerAt(31) end
+function onServer32() onServerAt(32) end  function onServer33() onServerAt(33) end  function onServer34() onServerAt(34) end  function onServer35() onServerAt(35) end
+function onServer36() onServerAt(36) end  function onServer37() onServerAt(37) end  function onServer38() onServerAt(38) end  function onServer39() onServerAt(39) end
+function onServer40() onServerAt(40) end  function onServer41() onServerAt(41) end  function onServer42() onServerAt(42) end  function onServer43() onServerAt(43) end
+function onServer44() onServerAt(44) end  function onServer45() onServerAt(45) end  function onServer46() onServerAt(46) end  function onServer47() onServerAt(47) end
+function onServer48() onServerAt(48) end  function onServer49() onServerAt(49) end  function onServer50() onServerAt(50) end  function onServer51() onServerAt(51) end
+function onServer52() onServerAt(52) end  function onServer53() onServerAt(53) end  function onServer54() onServerAt(54) end  function onServer55() onServerAt(55) end
+function onServer56() onServerAt(56) end  function onServer57() onServerAt(57) end  function onServer58() onServerAt(58) end  function onServer59() onServerAt(59) end
+function onServer60() onServerAt(60) end  function onServer61() onServerAt(61) end  function onServer62() onServerAt(62) end  function onServer63() onServerAt(63) end
 
-function onDel0() onDelAt(0) end
-function onDel1() onDelAt(1) end
-function onDel2() onDelAt(2) end
-function onDel3() onDelAt(3) end
-function onDel4() onDelAt(4) end
-function onDel5() onDelAt(5) end
-function onDel6() onDelAt(6) end
-function onDel7() onDelAt(7) end
-function onDel8() onDelAt(8) end
-function onDel9() onDelAt(9) end
-function onDel10() onDelAt(10) end
-function onDel11() onDelAt(11) end
-function onDel12() onDelAt(12) end
-function onDel13() onDelAt(13) end
-function onDel14() onDelAt(14) end
-function onDel15() onDelAt(15) end
-function onDel16() onDelAt(16) end
-function onDel17() onDelAt(17) end
-function onDel18() onDelAt(18) end
-function onDel19() onDelAt(19) end
+function onEdit0() onEditAt(0) end  function onEdit1() onEditAt(1) end  function onEdit2() onEditAt(2) end  function onEdit3() onEditAt(3) end
+function onEdit4() onEditAt(4) end  function onEdit5() onEditAt(5) end  function onEdit6() onEditAt(6) end  function onEdit7() onEditAt(7) end
+function onEdit8() onEditAt(8) end  function onEdit9() onEditAt(9) end  function onEdit10() onEditAt(10) end  function onEdit11() onEditAt(11) end
+function onEdit12() onEditAt(12) end  function onEdit13() onEditAt(13) end  function onEdit14() onEditAt(14) end  function onEdit15() onEditAt(15) end
+function onEdit16() onEditAt(16) end  function onEdit17() onEditAt(17) end  function onEdit18() onEditAt(18) end  function onEdit19() onEditAt(19) end
+function onEdit20() onEditAt(20) end  function onEdit21() onEditAt(21) end  function onEdit22() onEditAt(22) end  function onEdit23() onEditAt(23) end
+function onEdit24() onEditAt(24) end  function onEdit25() onEditAt(25) end  function onEdit26() onEditAt(26) end  function onEdit27() onEditAt(27) end
+function onEdit28() onEditAt(28) end  function onEdit29() onEditAt(29) end  function onEdit30() onEditAt(30) end  function onEdit31() onEditAt(31) end
+function onEdit32() onEditAt(32) end  function onEdit33() onEditAt(33) end  function onEdit34() onEditAt(34) end  function onEdit35() onEditAt(35) end
+function onEdit36() onEditAt(36) end  function onEdit37() onEditAt(37) end  function onEdit38() onEditAt(38) end  function onEdit39() onEditAt(39) end
+function onEdit40() onEditAt(40) end  function onEdit41() onEditAt(41) end  function onEdit42() onEditAt(42) end  function onEdit43() onEditAt(43) end
+function onEdit44() onEditAt(44) end  function onEdit45() onEditAt(45) end  function onEdit46() onEditAt(46) end  function onEdit47() onEditAt(47) end
+function onEdit48() onEditAt(48) end  function onEdit49() onEditAt(49) end  function onEdit50() onEditAt(50) end  function onEdit51() onEditAt(51) end
+function onEdit52() onEditAt(52) end  function onEdit53() onEditAt(53) end  function onEdit54() onEditAt(54) end  function onEdit55() onEditAt(55) end
+function onEdit56() onEditAt(56) end  function onEdit57() onEditAt(57) end  function onEdit58() onEditAt(58) end  function onEdit59() onEditAt(59) end
+function onEdit60() onEditAt(60) end  function onEdit61() onEditAt(61) end  function onEdit62() onEditAt(62) end  function onEdit63() onEditAt(63) end
 
-function onPreset0(v) onPresetAt(0, v) end
-function onPreset1(v) onPresetAt(1, v) end
-function onPreset2(v) onPresetAt(2, v) end
-function onPreset3(v) onPresetAt(3, v) end
-function onPreset4(v) onPresetAt(4, v) end
-function onPreset5(v) onPresetAt(5, v) end
-function onPreset6(v) onPresetAt(6, v) end
-function onPreset7(v) onPresetAt(7, v) end
+function onDel0() onDelAt(0) end  function onDel1() onDelAt(1) end  function onDel2() onDelAt(2) end  function onDel3() onDelAt(3) end
+function onDel4() onDelAt(4) end  function onDel5() onDelAt(5) end  function onDel6() onDelAt(6) end  function onDel7() onDelAt(7) end
+function onDel8() onDelAt(8) end  function onDel9() onDelAt(9) end  function onDel10() onDelAt(10) end  function onDel11() onDelAt(11) end
+function onDel12() onDelAt(12) end  function onDel13() onDelAt(13) end  function onDel14() onDelAt(14) end  function onDel15() onDelAt(15) end
+function onDel16() onDelAt(16) end  function onDel17() onDelAt(17) end  function onDel18() onDelAt(18) end  function onDel19() onDelAt(19) end
+function onDel20() onDelAt(20) end  function onDel21() onDelAt(21) end  function onDel22() onDelAt(22) end  function onDel23() onDelAt(23) end
+function onDel24() onDelAt(24) end  function onDel25() onDelAt(25) end  function onDel26() onDelAt(26) end  function onDel27() onDelAt(27) end
+function onDel28() onDelAt(28) end  function onDel29() onDelAt(29) end  function onDel30() onDelAt(30) end  function onDel31() onDelAt(31) end
+function onDel32() onDelAt(32) end  function onDel33() onDelAt(33) end  function onDel34() onDelAt(34) end  function onDel35() onDelAt(35) end
+function onDel36() onDelAt(36) end  function onDel37() onDelAt(37) end  function onDel38() onDelAt(38) end  function onDel39() onDelAt(39) end
+function onDel40() onDelAt(40) end  function onDel41() onDelAt(41) end  function onDel42() onDelAt(42) end  function onDel43() onDelAt(43) end
+function onDel44() onDelAt(44) end  function onDel45() onDelAt(45) end  function onDel46() onDelAt(46) end  function onDel47() onDelAt(47) end
+function onDel48() onDelAt(48) end  function onDel49() onDelAt(49) end  function onDel50() onDelAt(50) end  function onDel51() onDelAt(51) end
+function onDel52() onDelAt(52) end  function onDel53() onDelAt(53) end  function onDel54() onDelAt(54) end  function onDel55() onDelAt(55) end
+function onDel56() onDelAt(56) end  function onDel57() onDelAt(57) end  function onDel58() onDelAt(58) end  function onDel59() onDelAt(59) end
+function onDel60() onDelAt(60) end  function onDel61() onDelAt(61) end  function onDel62() onDelAt(62) end  function onDel63() onDelAt(63) end
 
-function onRuleDel0()  onRuleDelAt(0)  end
-function onRuleDel1()  onRuleDelAt(1)  end
-function onRuleDel2()  onRuleDelAt(2)  end
-function onRuleDel3()  onRuleDelAt(3)  end
-function onRuleDel4()  onRuleDelAt(4)  end
-function onRuleDel5()  onRuleDelAt(5)  end
-function onRuleDel6()  onRuleDelAt(6)  end
-function onRuleDel7()  onRuleDelAt(7)  end
-function onRuleDel8()  onRuleDelAt(8)  end
-function onRuleDel9()  onRuleDelAt(9)  end
-function onRuleDel10() onRuleDelAt(10) end
-function onRuleDel11() onRuleDelAt(11) end
-function onRuleDel12() onRuleDelAt(12) end
-function onRuleDel13() onRuleDelAt(13) end
-function onRuleDel14() onRuleDelAt(14) end
-function onRuleDel15() onRuleDelAt(15) end
-function onRuleDel16() onRuleDelAt(16) end
-function onRuleDel17() onRuleDelAt(17) end
-function onRuleDel18() onRuleDelAt(18) end
-function onRuleDel19() onRuleDelAt(19) end
+function onPreset0(v) onPresetAt(0, v) end  function onPreset1(v) onPresetAt(1, v) end  function onPreset2(v) onPresetAt(2, v) end  function onPreset3(v) onPresetAt(3, v) end
+function onPreset4(v) onPresetAt(4, v) end  function onPreset5(v) onPresetAt(5, v) end  function onPreset6(v) onPresetAt(6, v) end  function onPreset7(v) onPresetAt(7, v) end
 
-function onSubUpd0()  onSubUpdAt(0)  end
-function onSubUpd1()  onSubUpdAt(1)  end
-function onSubUpd2()  onSubUpdAt(2)  end
-function onSubUpd3()  onSubUpdAt(3)  end
-function onSubUpd4()  onSubUpdAt(4)  end
-function onSubUpd5()  onSubUpdAt(5)  end
-function onSubUpd6()  onSubUpdAt(6)  end
-function onSubUpd7()  onSubUpdAt(7)  end
-function onSubUpd8()  onSubUpdAt(8)  end
-function onSubUpd9()  onSubUpdAt(9)  end
-function onSubUpd10() onSubUpdAt(10) end
-function onSubUpd11() onSubUpdAt(11) end
+function onRuleDel0() onRuleDelAt(0) end  function onRuleDel1() onRuleDelAt(1) end  function onRuleDel2() onRuleDelAt(2) end  function onRuleDel3() onRuleDelAt(3) end
+function onRuleDel4() onRuleDelAt(4) end  function onRuleDel5() onRuleDelAt(5) end  function onRuleDel6() onRuleDelAt(6) end  function onRuleDel7() onRuleDelAt(7) end
+function onRuleDel8() onRuleDelAt(8) end  function onRuleDel9() onRuleDelAt(9) end  function onRuleDel10() onRuleDelAt(10) end  function onRuleDel11() onRuleDelAt(11) end
+function onRuleDel12() onRuleDelAt(12) end  function onRuleDel13() onRuleDelAt(13) end  function onRuleDel14() onRuleDelAt(14) end  function onRuleDel15() onRuleDelAt(15) end
+function onRuleDel16() onRuleDelAt(16) end  function onRuleDel17() onRuleDelAt(17) end  function onRuleDel18() onRuleDelAt(18) end  function onRuleDel19() onRuleDelAt(19) end
+function onRuleDel20() onRuleDelAt(20) end  function onRuleDel21() onRuleDelAt(21) end  function onRuleDel22() onRuleDelAt(22) end  function onRuleDel23() onRuleDelAt(23) end
+function onRuleDel24() onRuleDelAt(24) end  function onRuleDel25() onRuleDelAt(25) end  function onRuleDel26() onRuleDelAt(26) end  function onRuleDel27() onRuleDelAt(27) end
+function onRuleDel28() onRuleDelAt(28) end  function onRuleDel29() onRuleDelAt(29) end  function onRuleDel30() onRuleDelAt(30) end  function onRuleDel31() onRuleDelAt(31) end
+function onRuleDel32() onRuleDelAt(32) end  function onRuleDel33() onRuleDelAt(33) end  function onRuleDel34() onRuleDelAt(34) end  function onRuleDel35() onRuleDelAt(35) end
+function onRuleDel36() onRuleDelAt(36) end  function onRuleDel37() onRuleDelAt(37) end  function onRuleDel38() onRuleDelAt(38) end  function onRuleDel39() onRuleDelAt(39) end
+function onRuleDel40() onRuleDelAt(40) end  function onRuleDel41() onRuleDelAt(41) end  function onRuleDel42() onRuleDelAt(42) end  function onRuleDel43() onRuleDelAt(43) end
+function onRuleDel44() onRuleDelAt(44) end  function onRuleDel45() onRuleDelAt(45) end  function onRuleDel46() onRuleDelAt(46) end  function onRuleDel47() onRuleDelAt(47) end
+function onRuleDel48() onRuleDelAt(48) end  function onRuleDel49() onRuleDelAt(49) end  function onRuleDel50() onRuleDelAt(50) end  function onRuleDel51() onRuleDelAt(51) end
+function onRuleDel52() onRuleDelAt(52) end  function onRuleDel53() onRuleDelAt(53) end  function onRuleDel54() onRuleDelAt(54) end  function onRuleDel55() onRuleDelAt(55) end
+function onRuleDel56() onRuleDelAt(56) end  function onRuleDel57() onRuleDelAt(57) end  function onRuleDel58() onRuleDelAt(58) end  function onRuleDel59() onRuleDelAt(59) end
+function onRuleDel60() onRuleDelAt(60) end  function onRuleDel61() onRuleDelAt(61) end  function onRuleDel62() onRuleDelAt(62) end  function onRuleDel63() onRuleDelAt(63) end
 
-function onSubDel0()  onSubDelAt(0)  end
-function onSubDel1()  onSubDelAt(1)  end
-function onSubDel2()  onSubDelAt(2)  end
-function onSubDel3()  onSubDelAt(3)  end
-function onSubDel4()  onSubDelAt(4)  end
-function onSubDel5()  onSubDelAt(5)  end
-function onSubDel6()  onSubDelAt(6)  end
-function onSubDel7()  onSubDelAt(7)  end
-function onSubDel8()  onSubDelAt(8)  end
-function onSubDel9()  onSubDelAt(9)  end
-function onSubDel10() onSubDelAt(10) end
-function onSubDel11() onSubDelAt(11) end
+function onSubUpd0() onSubUpdAt(0) end  function onSubUpd1() onSubUpdAt(1) end  function onSubUpd2() onSubUpdAt(2) end  function onSubUpd3() onSubUpdAt(3) end
+function onSubUpd4() onSubUpdAt(4) end  function onSubUpd5() onSubUpdAt(5) end  function onSubUpd6() onSubUpdAt(6) end  function onSubUpd7() onSubUpdAt(7) end
+function onSubUpd8() onSubUpdAt(8) end  function onSubUpd9() onSubUpdAt(9) end  function onSubUpd10() onSubUpdAt(10) end  function onSubUpd11() onSubUpdAt(11) end
+function onSubUpd12() onSubUpdAt(12) end  function onSubUpd13() onSubUpdAt(13) end  function onSubUpd14() onSubUpdAt(14) end  function onSubUpd15() onSubUpdAt(15) end
+function onSubUpd16() onSubUpdAt(16) end  function onSubUpd17() onSubUpdAt(17) end  function onSubUpd18() onSubUpdAt(18) end  function onSubUpd19() onSubUpdAt(19) end
+function onSubUpd20() onSubUpdAt(20) end  function onSubUpd21() onSubUpdAt(21) end  function onSubUpd22() onSubUpdAt(22) end  function onSubUpd23() onSubUpdAt(23) end
+function onSubUpd24() onSubUpdAt(24) end  function onSubUpd25() onSubUpdAt(25) end  function onSubUpd26() onSubUpdAt(26) end  function onSubUpd27() onSubUpdAt(27) end
+function onSubUpd28() onSubUpdAt(28) end  function onSubUpd29() onSubUpdAt(29) end  function onSubUpd30() onSubUpdAt(30) end  function onSubUpd31() onSubUpdAt(31) end
+
+function onSubDel0() onSubDelAt(0) end  function onSubDel1() onSubDelAt(1) end  function onSubDel2() onSubDelAt(2) end  function onSubDel3() onSubDelAt(3) end
+function onSubDel4() onSubDelAt(4) end  function onSubDel5() onSubDelAt(5) end  function onSubDel6() onSubDelAt(6) end  function onSubDel7() onSubDelAt(7) end
+function onSubDel8() onSubDelAt(8) end  function onSubDel9() onSubDelAt(9) end  function onSubDel10() onSubDelAt(10) end  function onSubDel11() onSubDelAt(11) end
+function onSubDel12() onSubDelAt(12) end  function onSubDel13() onSubDelAt(13) end  function onSubDel14() onSubDelAt(14) end  function onSubDel15() onSubDelAt(15) end
+function onSubDel16() onSubDelAt(16) end  function onSubDel17() onSubDelAt(17) end  function onSubDel18() onSubDelAt(18) end  function onSubDel19() onSubDelAt(19) end
+function onSubDel20() onSubDelAt(20) end  function onSubDel21() onSubDelAt(21) end  function onSubDel22() onSubDelAt(22) end  function onSubDel23() onSubDelAt(23) end
+function onSubDel24() onSubDelAt(24) end  function onSubDel25() onSubDelAt(25) end  function onSubDel26() onSubDelAt(26) end  function onSubDel27() onSubDelAt(27) end
+function onSubDel28() onSubDelAt(28) end  function onSubDel29() onSubDelAt(29) end  function onSubDel30() onSubDelAt(30) end  function onSubDel31() onSubDelAt(31) end
