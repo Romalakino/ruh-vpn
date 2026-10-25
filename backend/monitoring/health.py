@@ -131,7 +131,12 @@ async def http_ping(
                 elapsed = loop.time() - start
                 resp.release()
         return int(round(elapsed * 1000))
-    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # aiohttp_socks raises ProxyError (plain Exception, not ClientError)
+        # when the local SOCKS port disappears mid-request — e.g. a probe
+        # racing with teardown. A probe failure is just a failed probe.
         return None
 
 
@@ -412,6 +417,10 @@ class HealthMonitor:
             await self._task
         except asyncio.CancelledError:
             pass
+        except Exception:
+            # A probe may fail while the tunnel is being torn down; that must
+            # not abort stop/start (it used to surface as a bogus RPC error).
+            pass
         self._task = None
 
     async def check_now(self) -> int:
@@ -549,6 +558,10 @@ class TunnelMonitor:
         try:
             await self._task
         except asyncio.CancelledError:
+            pass
+        except Exception:
+            # A probe may fail while the tunnel is being torn down; that must
+            # not abort stop/start (it used to surface as a bogus RPC error).
             pass
         self._task = None
 
