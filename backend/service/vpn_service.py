@@ -49,6 +49,7 @@ from backend.monitoring.health import (
 )
 from backend.paths import RUNTIME_DIR
 from backend.service import tun_binary
+from backend.service.proxy_guard import reset_stale_proxy
 from backend.monitoring.log_streamer import LogStreamer
 from backend.monitoring.traffic import TrafficMonitor
 from backend.singbox.process_manager import LOG_DIR, LOG_NAMES, SINGBOX_BIN
@@ -81,6 +82,7 @@ class VpnService:
         self.state = state or AppState()
         self._pm = ProcessManager(logger=self._log)
         self._teardown_in_progress = False
+        self._shutting_down = False
         self._health: Optional[HealthMonitor] = None
         self._log_streamer = LogStreamer(self._on_singbox_log_line)
         self._log_streamer.start()
@@ -115,6 +117,9 @@ class VpnService:
 
     async def bootstrap(self) -> None:
         """Load persisted servers/rules/settings."""
+        # The entry point has bound the control port: leftovers are ours, not live.
+        await self._pm.stop_all()
+        await self._pm.clear_state()
         self.state.servers = await load_servers()
         self.state.rules = await load_rules()
         self.state.settings = await load_settings()
@@ -133,21 +138,25 @@ class VpnService:
         asyncio.create_task(self.backfill_countries())
 
     async def shutdown(self) -> None:
-        if self._tunnel:
-            await self._tunnel.stop()
-            self._tunnel = None
-        if self._health:
-            await self._health.stop()
-            self._health = None
-        if self._traffic:
-            await self._traffic.stop()
-            self._traffic = None
-        await self._subs.stop()
-        await self._log_streamer.stop()
-        await self._pm.stop_monitor()
-        await self._pm.stop_all()
-        await self._unset_system_proxy(silent=True)
-        await self._pm.clear_state()
+        self._shutting_down = True
+        # Drain an in-flight StartProxy before cleanup; queued jobs cannot restart it.
+        async with self.state.lock:
+            await self._unset_system_proxy(silent=True)
+            if self._tunnel:
+                await self._tunnel.stop()
+                self._tunnel = None
+            if self._health:
+                await self._health.stop()
+                self._health = None
+            if self._traffic:
+                await self._traffic.stop()
+                self._traffic = None
+            await self._subs.stop()
+            await self._log_streamer.stop()
+            await self._pm.stop_monitor()
+            await self._pm.stop_all()
+            await self._pm.clear_state()
+            self._update_status_basics()
 
     async def _on_singbox_log_line(self, source: str, level: str, message: str) -> None:
         # forward verbatim into the in-memory ring + LogMessage signal
@@ -580,6 +589,8 @@ class VpnService:
     # --- start / stop body (assumes lock is held)
 
     async def _start_locked(self, server_id: str, mode: str, proxy_mode: str) -> bool:
+        if self._shutting_down:
+            return False
         if mode not in ("rules", "global"):
             self._log("error", f"invalid mode: {mode!r}")
             return False
@@ -1266,7 +1277,7 @@ class VpnService:
             self._log("warn", "gsettings not found — cannot set system proxy")
             return False
         cmds = [
-            ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
+            ["gsettings", "set", "org.gnome.system.proxy", "mode", "none"],
             ["gsettings", "set", "org.gnome.system.proxy.socks", "host", "127.0.0.1"],
             ["gsettings", "set", "org.gnome.system.proxy.socks", "port", str(port)],
             ["gsettings", "set", "org.gnome.system.proxy.http", "host", "127.0.0.1"],
@@ -1280,6 +1291,8 @@ class VpnService:
                 "use-same-proxy",
                 "true",
             ],
+            # Enable last: a crash halfway through configuration must stay direct.
+            ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
         ]
         for cmd in cmds:
             rc = await self._run(cmd)
@@ -1289,10 +1302,11 @@ class VpnService:
         return True
 
     async def _unset_system_proxy(self, silent: bool = False) -> None:
-        if shutil.which("gsettings") is None:
-            return
-        await self._run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"])
-        if not silent:
+        settings = self.state.settings
+        changed = await reset_stale_proxy(
+            {settings.transportPort, settings.rulesPort, settings.globalPort}
+        )
+        if changed and not silent:
             self._log("info", "system proxy disabled")
 
     async def _start_tun(self, upstream_port: int, server: Server) -> bool:

@@ -8,12 +8,12 @@ and control-center shortcut.
 
 | Field | Value |
 | --- | --- |
-| ID | `umedbazarov/ruh-vpn` |
+| ID | `vlad-dev/ruh-vpn` |
 | Entries | Bar widget: `vpn_widget`; panel: `vpn_panel`; service: `vpn_service`; shortcut: `vpn_toggle` |
 
 ## Requirements
 
-The backend requires `sing-box`, `python3` and `pkill`, plus the Python
+The backend requires `sing-box` and `python3`, plus the Python
 packages declared in `pyproject.toml`: `pydantic`, `aiofiles`, `aiohttp` and
 `aiohttp-socks`. The plugin never installs packages itself: it checks the
 configured interpreter at startup and, if something is missing, reports the
@@ -48,7 +48,7 @@ add a server, choose the routing mode (`rules` or `global`) and connection mode
 Open or close the panel with:
 
 ```sh
-noctalia msg panel-toggle umedbazarov/ruh-vpn:vpn_panel
+noctalia msg panel-toggle vlad-dev/ruh-vpn:vpn_panel
 ```
 
 ## Settings
@@ -84,13 +84,37 @@ noctalia msg panel-toggle umedbazarov/ruh-vpn:vpn_panel
 - Network access includes configured VPN endpoints and subscription URLs,
   `api.country.is` when country detection is enabled, Cloudflare's speed-test
   endpoint, and remote rule sets enabled by routing presets.
-- DNS in the generated configurations: Google DNS (`8.8.8.8`) over plain UDP
-  through the proxy tunnel; AliDNS (`223.5.5.5`) over plain UDP directly, as
-  the resolver for direct-routed and unmatched domains in rules mode; Google
-  DNS-over-HTTPS (`8.8.8.8`, through the tunnel) in TUN mode.
+- Mux DNS uses Quad9 (`9.9.9.9`) over UDP, through the tunnel by default;
+  Roblox has a separate direct Quad9 resolver. The plugin does not change
+  the operating system's DNS settings. TUN has a separate DoH configuration.
 - TUN mode grants `CAP_NET_ADMIN`, after a PolicyKit prompt, to a private copy
   of `sing-box` kept in a user-only (mode 0700) directory under the plugin
   data directory — never to the shared system binary. The copy is recreated
   whenever the system `sing-box` changes, which also clears the previously
   granted capability. The kill switch installs a dedicated nftables table and
   removes it when disabled.
+
+## Fail-open recovery (system proxy mode)
+
+When the backend crashes or freezes, the system proxy is disabled so new
+connections use plain internet. This deliberately favors connectivity over
+keeping traffic inside a failed VPN.
+
+- A standard-library Python guard runs in a separate process session, without
+  root or a systemd unit. Backend exit closes its pipe; a frozen backend misses
+  the one-second heartbeat and triggers recovery after five seconds. The guard
+  also kills the frozen parent through a Linux pidfd so respawn needs no manual
+  resume and cannot signal a reused PID.
+- If the guard itself exits, the backend stops the unprotected VPN. The Luau
+  service retries with backoff, capped at 30 seconds.
+- Only loopback proxies on this instance's transport/mux ports are reset.
+  Foreign or mixed proxy configurations are left alone.
+- Startup cleanup runs only after owning the control port. A duplicate
+  backend never resets a live instance's proxy. RPC returns 503 until ready.
+- Orphan cleanup checks exact argv/config paths in `/proc`, not broad `pkill`
+  patterns. It cannot kill an unrelated proxy or a shell mentioning sing-box.
+
+Keep the **kill switch disabled** for fail-open operation. The guard does not
+remove privileged nftables rules or orphan TUN routes. Those modes are not
+covered by this recovery guarantee. A complete session/cgroup kill can also
+kill the guard; startup cleanup then runs at the next plugin start.

@@ -32,13 +32,14 @@ def test_rules_config_includes_presets():
     assert len(proxy_rules) == len(ALL)
 
 
-def test_rules_config_dns_covers_domain_rule_sets():
+def test_rules_config_dns_proxies_unmatched_domains_and_keeps_roblox_direct():
     cfg = config_builder.build_rules_config(active_presets=ALL)
-    dns_rule_sets = [r["rule_set"] for r in cfg["dns"]["rules"] if "rule_set" in r]
-    flattened = {t for group in dns_rule_sets for t in group}
-    assert "refilter_domains" in flattened
-    assert "geosite_noncn" in flattened
-    assert "geosite_sanctioned" in flattened
+    assert cfg["dns"]["final"] == "proxy-dns"
+    assert cfg["route"]["final"] == "proxy"
+    assert cfg["dns"]["rules"][0] == config_builder.roblox_dns_rule()
+    resolver = next(s for s in cfg["dns"]["servers"] if s["tag"] == config_builder.ROBLOX_DNS_TAG)
+    assert resolver["server"] == "9.9.9.9"
+    assert "detour" not in resolver
 
 
 def test_transport_config_resolves_prefer_ipv4():

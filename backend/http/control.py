@@ -125,6 +125,7 @@ class ControlServer:
         self._token_file = token_file
         self._handlers = _build_handlers()
         self._runner: web.AppRunner | None = None
+        self._ready = False
         self._wire_events()
 
     # ------------------------------------------------------------- events
@@ -173,6 +174,8 @@ class ControlServer:
     async def _handle_rpc(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"error": "unauthorized"}, status=401)
+        if not self._ready:
+            return web.json_response({"error": "backend is not ready"}, status=503)
         try:
             req = await request.json()
         except Exception:
@@ -198,7 +201,7 @@ class ControlServer:
         return web.json_response({"result": result}, dumps=lambda o: json.dumps(o, default=str))
 
     async def _handle_health(self, request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "port": self._port})
+        return web.json_response({"ok": True, "port": self._port, "ready": self._ready})
 
     def _publish_token(self) -> None:
         """Write the token file, readable by the owning user only.
@@ -224,9 +227,17 @@ class ControlServer:
         site = web.TCPSite(self._runner, HOST, self._port)
         await site.start()  # OSError (EADDRINUSE) propagates to caller
         self._publish_token()
+
+    def mark_ready(self) -> None:
+        """Permit RPC only after stale-proxy cleanup and bootstrap finish."""
+        self._ready = True
         emit({"event": "ready", "data": {"port": self._port}})
 
+    def mark_stopping(self) -> None:
+        self._ready = False
+
     async def stop(self) -> None:
+        self.mark_stopping()
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None

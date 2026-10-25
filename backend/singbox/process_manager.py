@@ -1,11 +1,8 @@
 """Async start/stop/monitor of sing-box and ssh transport processes.
 
-All managed processes are tagged via either:
-- ssh: <TAG>=1 environment variable
-- sing-box: filename pattern <PREFIX>-*.json passed as -c argument
-
-This is intentionally narrow so pkill_zombies can use very specific patterns
-and never affect unrelated proxy processes.
+Orphan cleanup checks argv and this instance's exact config/known-hosts paths.
+It must not match shell commands that merely mention sing-box or another
+plugin instance using the same filenames in a different data directory.
 """
 
 from __future__ import annotations
@@ -56,11 +53,22 @@ LOG_NAMES = {
     "ssh": f"{PREFIX}-ssh.log",
 }
 
-# Must only ever match processes started with this plugin's identity.
-PKILL_PATTERNS = [
-    f"ssh.*{TAG}=1",
-    f"sing-box.*{PREFIX}-",
-]
+PROC_ROOT = Path("/proc")
+
+
+def _owned_command(args: list[str]) -> bool:
+    if not args:
+        return False
+    binary = Path(args[0]).name
+    if binary in (Path(SINGBOX_BIN).name, "sing-box-tun"):
+        configs = {str(SINGBOX_CONFIG_DIR / name) for name in CONFIG_NAMES.values()}
+        return len(args) >= 4 and args[1:3] == ["run", "-c"] and args[3] in configs
+    if binary in ("ssh", "sshpass"):
+        return (
+            f"SetEnv={TAG}=1" in args
+            and f"UserKnownHostsFile={KNOWN_HOSTS_FILE}" in args
+        )
+    return False
 
 
 @dataclass
@@ -221,17 +229,36 @@ class ProcessManager:
         await self.pkill_zombies()
 
     async def pkill_zombies(self) -> None:
-        """Kill any leftover processes matching our narrow patterns."""
-        for pattern in PKILL_PATTERNS:
+        """Reap only this data directory's orphan transports and muxes."""
+        leftovers = {}
+        for path in PROC_ROOT.glob("[0-9]*/cmdline"):
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "pkill", "-f", pattern,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                await proc.wait()
-            except FileNotFoundError:
-                return
+                pid = int(path.parent.name)
+                args = os.fsdecode(path.read_bytes()).rstrip("\0").split("\0")
+                if pid != os.getpid() and _owned_command(args):
+                    os.kill(pid, signal.SIGTERM)
+                    leftovers[pid] = (path, args)
+            except (OSError, ValueError):
+                continue
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while leftovers:
+            for pid, (path, args) in list(leftovers.items()):
+                try:
+                    current = os.fsdecode(path.read_bytes()).rstrip("\0").split("\0")
+                except OSError:
+                    current = []
+                if current != args:
+                    leftovers.pop(pid)
+            if not leftovers or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.1)
+        for pid, (path, args) in leftovers.items():
+            try:
+                # Recheck after waiting: never signal a PID whose argv changed.
+                if os.fsdecode(path.read_bytes()).rstrip("\0").split("\0") == args:
+                    os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
     # ----------------------------------------------------------------- introspection
 

@@ -7,7 +7,7 @@ license      = "MIT"
 icon         = "shield-lock"
 description  = "VPN/proxy manager (sing-box): SSH, VLESS, VMess, Shadowsocks, SOCKS5, routing rules, kill switch."
 tags         = ["bar", "panel", "service", "shortcut", "network", "privacy"]
-dependencies = ["sing-box", "python3", "ssh", "sshpass", "gsettings", "pkexec", "setcap", "getcap", "nft", "pkill", "ip"]
+dependencies = ["sing-box", "python3", "ssh", "sshpass", "gsettings", "pkexec", "setcap", "getcap", "nft", "ip"]
 
 # Plugin settings
 [[setting]]

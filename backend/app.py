@@ -23,9 +23,11 @@ import signal
 import sys
 from pathlib import Path
 
+from backend.config.settings import load_settings
 from backend.http.control import DEFAULT_PORT, HOST, emit, serve
 from backend.identity import PREFIX
 from backend.paths import RUNTIME_DIR, ensure_private_dir, protect_file
+from backend.service.proxy_guard import reset_stale_proxy
 from backend.service.vpn_service import VpnService
 
 PIDFILE = RUNTIME_DIR / f"{PREFIX}-backend.pid"
@@ -147,7 +149,6 @@ async def main() -> int:
     port = _resolve_port()
 
     svc = VpnService()
-    await svc.bootstrap()
 
     # Per-launch RPC token. serve() writes it to TOKENFILE (0600) only after
     # the port is bound; the Luau service reads the file and sends it as
@@ -162,8 +163,6 @@ async def main() -> int:
         return 3
 
     _write_pidfile(port)
-    print(f"[info] Ruh VPN backend ready on http://{HOST}:{port} (pid {os.getpid()})", flush=True)
-
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -178,21 +177,85 @@ async def main() -> int:
         except NotImplementedError:
             pass
 
-    await stop_event.wait()
-
-    print("[info] shutting down VPN service", flush=True)
+    settings = svc.state.settings
+    own_ports = {settings.transportPort, settings.rulesPort, settings.globalPort}
+    exit_code = 1
+    guard = None
+    heartbeat = None
+    stop_waiter = None
+    guard_waiter = None
     try:
-        await control.stop()
-    except Exception as exc:
-        print(f"[error] control stop error: {exc}", flush=True)
-    try:
-        await svc.shutdown()
-    except Exception as exc:
-        print(f"[error] shutdown error: {exc}", flush=True)
-    _remove_pidfile()
-    _remove_tokenfile(token)
-    emit({"event": "exit", "data": {"code": 0}})
+        try:
+            settings = await load_settings()
+        except OSError as exc:
+            print(f"[warn] could not read settings for proxy cleanup: {exc}", flush=True)
+        svc.state.settings = settings
+        own_ports = {settings.transportPort, settings.rulesPort, settings.globalPort}
+        # Bind first to protect an existing backend; reset before slow bootstrap.
+        if await reset_stale_proxy(own_ports):
+            print("[info] stale system proxy reset (fail-open)", flush=True)
+        # Separate session: Noctalia's process-group cleanup cannot kill the guard.
+        guard = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(Path(__file__).parent / "service" / "proxy_guard.py"),
+            "--watch", *(str(port) for port in sorted(own_ports)),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        heartbeat = asyncio.create_task(_guard_heartbeat(guard))
+        await svc.bootstrap()
+        if not stop_event.is_set():
+            control.mark_ready()
+            print(f"[info] Ruh VPN backend ready on http://{HOST}:{port} (pid {os.getpid()})", flush=True)
+            stop_waiter = asyncio.create_task(stop_event.wait())
+            guard_waiter = asyncio.create_task(guard.wait())
+            await asyncio.wait((stop_waiter, guard_waiter), return_when=asyncio.FIRST_COMPLETED)
+            if not stop_event.is_set():
+                raise RuntimeError("fail-open guard exited; stopping the unprotected VPN")
+        exit_code = 0
+    finally:
+        # Keep the socket bound until cleanup ends, so a respawn cannot race it.
+        control.mark_stopping()
+        print("[info] shutting down VPN service", flush=True)
+        for task in (heartbeat, stop_waiter, guard_waiter):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, BrokenPipeError, ConnectionResetError):
+                    pass
+        try:
+            await reset_stale_proxy(own_ports)
+        except Exception as exc:
+            print(f"[error] proxy cleanup error: {exc}", flush=True)
+        try:
+            await svc.shutdown()
+        except Exception as exc:
+            print(f"[error] shutdown error: {exc}", flush=True)
+        if guard is not None:
+            guard.stdin.close()
+            try:
+                await asyncio.wait_for(guard.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                guard.kill()
+                await guard.wait()
+        try:
+            await control.stop()
+        except Exception as exc:
+            print(f"[error] control stop error: {exc}", flush=True)
+        _remove_pidfile()
+        _remove_tokenfile(token)
+        emit({"event": "exit", "data": {"code": exit_code}})
     return 0
+
+
+async def _guard_heartbeat(guard: asyncio.subprocess.Process) -> None:
+    while guard.returncode is None:
+        guard.stdin.write(b".\n")
+        await guard.stdin.drain()
+        await asyncio.sleep(1.0)
 
 
 if __name__ == "__main__":

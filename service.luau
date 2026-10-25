@@ -41,9 +41,16 @@ local ownsBackend = false
 local ready       = false
 local autoStarted = false
 local lastNonce   = nil
-local failures    = 0     -- consecutive failed polls; 3 in a row = backend gone
 local spawning    = false -- preflight or backend start in flight
+local spawnStartedAt = 0  -- os.time() of the last spawn; unblocks a spawn that never reports ready
+local probing     = false
+local polling     = false
+local resetting   = false
+local backendGeneration = 0
+local backendPid  = nil
 local lastSpawnError = nil -- dedupes notifyError across spawn retries
+local nextSpawnAt = 0     -- os.time() when the next respawn attempt is allowed
+local spawnBackoff = 2    -- seconds, doubles up to 30 on repeated failures
 
 local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
@@ -157,6 +164,39 @@ local function maybeAutoStart()
   end)
 end
 
+-- ── fail-open: never leave a dead proxy behind ──────────────────
+-- Share the backend's ownership checks; never disable a foreign manual proxy.
+local function resetSystemProxy(done)
+  local py = PY
+  if py:sub(1, 1) == "~" then py = noctalia.expandPath(py) end
+  local settings = noctalia.state.get("settings") or {}
+  local cmd = shellQuote(py) .. " " .. shellQuote(PROJDIR .. "/backend/service/proxy_guard.py")
+  for _, port in ipairs({ settings.transportPort or 11080, settings.rulesPort or 11081, settings.globalPort or 11082 }) do
+    cmd = cmd .. " " .. tostring(tonumber(port) or 0)
+  end
+  local started = noctalia.runAsync(cmd, function(res)
+    if done then done(res) end
+  end, 5000)
+  if not started and done then done(nil) end
+end
+
+local function backendGone()
+  if resetting then return end
+  backendGeneration = backendGeneration + 1
+  ready, spawning, polling = false, false, false
+  backendPid = nil
+  local st = noctalia.state.get("status") or {}
+  st.running, st.pids = false, {}
+  noctalia.state.set("status", st)
+  noctalia.state.set("backend", { ready = false, owns = ownsBackend })
+  resetting = true
+  resetSystemProxy(function()
+    resetting = false
+    nextSpawnAt = os.time() + 1
+    spawnBackoff = 2
+  end)
+end
+
 -- ── backend stdout event consumer ───────────────────────────────
 local function onEvent(line)
   local ev = noctalia.json.decode(line)
@@ -198,19 +238,20 @@ local function onEvent(line)
   elseif e == "ready" then
     ready = true
     spawning = false
-    failures = 0
+    spawnBackoff = 2
+    nextSpawnAt = 0
+    local pidfile = noctalia.readFile(PIDFILE)
+    backendPid = pidfile and tonumber(pidfile:match("^(%d+)%s")) or nil
     readToken() -- written before "ready" is emitted, so it is there by now
     noctalia.state.set("backend", { ready = true, owns = ownsBackend })
     refreshLists()
     pushPingSettings()
     maybeAutoStart()
   elseif e == "error" then
-    spawning = false
+    ready, spawning, ownsBackend = false, false, false
     noctalia.state.set("backend", { ready = false, error = (ev.data and ev.data.message) or "error" })
   elseif e == "exit" then
-    ready = false
-    spawning = false
-    noctalia.state.set("backend", { ready = false, owns = ownsBackend })
+    if ownsBackend then backendGone() end
   end
 end
 
@@ -229,6 +270,8 @@ local function publishSpawnError(message)
 end
 
 local function doSpawn(py)
+  backendGeneration = backendGeneration + 1
+  local generation = backendGeneration
   ownsBackend = true
   local cmd = "cd " .. shellQuote(PROJDIR)
              .. " && RUH_VPN_CONTROL_PORT=" .. tostring(PORT)
@@ -236,11 +279,17 @@ local function doSpawn(py)
              .. " RUH_VPN_DATA_DIR=" .. shellQuote(DATA_DIR)
              .. " RUH_VPN_RUNTIME_DIR=" .. shellQuote(RUNTIME_DIR)
              .. " exec " .. shellQuote(py) .. " -m backend.app"
-  noctalia.runStream(cmd, onEvent)
+  if not noctalia.runStream(cmd, function(line)
+    if generation == backendGeneration then onEvent(line) end
+  end) then
+    ownsBackend = false
+    publishSpawnError("Could not launch the VPN backend")
+  end
 end
 
 local function spawnBackend()
   spawning = true
+  spawnStartedAt = os.time()
   local py = PY
   if py:sub(1, 1) == "~" then py = noctalia.expandPath(py) end
   local probe = "import importlib.util,sys;"
@@ -263,19 +312,37 @@ local function spawnBackend()
 end
 
 local function attachOrSpawn()
-  if spawning then return end
+  if spawning or probing or resetting then return end
+  probing = true
+  local generation = backendGeneration
   noctalia.http({ url = BASE .. "/healthz" }, function(resp)
-    if resp and resp.ok then
+    probing = false
+    if generation ~= backendGeneration or ready then return end
+    local d = resp and resp.ok and noctalia.json.decode(resp.body) or nil
+    if type(d) == "table" and d.ok then
+      if d.ready == false then
+        -- A bound socket is not readiness; don't race bootstrap or spawn twice.
+        nextSpawnAt = os.time() + 1
+        spawnBackoff = 2
+        return
+      end
       -- Attach: a backend outlived a previous shell, and its proxy with it.
       ownsBackend = false
       ready = true
-      failures = 0
+      backendPid = nil
+      backendGeneration = backendGeneration + 1
+      spawnBackoff = 2
+      nextSpawnAt = 0
       readToken() -- the running backend published its token at startup
       noctalia.state.set("backend", { ready = true, owns = false })
       refreshLists()
       maybeAutoStart()
     else
-      spawnBackend()
+      resetting = true
+      resetSystemProxy(function()
+        resetting = false
+        if generation == backendGeneration and not ready then spawnBackend() end
+      end)
     end
   end)
 end
@@ -284,24 +351,47 @@ attachOrSpawn()
 
 -- ── periodic polling ────────────────────────────────────────────
 function update()
-  if not ready then return end
-  -- Watchdog. The probe above can attach to a backend that is already on its
-  -- way out: reloading this file makes the old instance's onExit SIGTERM the
-  -- backend while the new instance is probing, so /healthz answers once and
-  -- then the process is gone. Without this the service stayed bound to a
-  -- corpse forever, since attach-or-spawn only ran at startup.
+  if not ready then
+    -- runStream delivers stdout lines only, never a process-exit event, so a
+    -- backend that dies during bootstrap would leave `spawning` stuck forever
+    -- and block every respawn. Time it out.
+    if spawning and os.time() - spawnStartedAt > 45 then spawning = false end
+    -- Retry with exponential backoff instead of staying dead until the shell
+    -- is restarted.
+    if not spawning and not probing and not resetting and os.time() >= nextSpawnAt then
+      nextSpawnAt = os.time() + spawnBackoff
+      spawnBackoff = math.min(spawnBackoff * 2, 30)
+      attachOrSpawn()
+    end
+    return
+  end
+  if polling then return end
+  polling = true
+  local generation = backendGeneration
+  -- Confirm liveness separately: an RPC error must not disable a healthy VPN.
   rpc("GetStatus", {}, function(st, err)
+    if generation ~= backendGeneration then return end
     if err then
-      failures = failures + 1
-      if failures >= 3 then
-        failures = 0
-        ready = false
-        noctalia.state.set("backend", { ready = false, owns = ownsBackend })
-        attachOrSpawn()
-      end
+      local started = noctalia.runAsync(
+        "curl --noproxy '*' -fsS -m 2 " .. shellQuote(BASE .. "/healthz"),
+        function(res)
+          if generation ~= backendGeneration then return end
+          polling = false
+          local d = res and res.exitCode == 0 and noctalia.json.decode(res.stdout or "") or nil
+          if type(d) == "table" and d.ok then
+            readToken() -- a surviving/restarted backend may have rotated its token
+            if d.ready == false then
+              ready = false
+              nextSpawnAt = os.time() + 1
+            end
+            return
+          end
+          backendGone()
+        end, 5000)
+      if not started then polling = false end
       return
     end
-    failures = 0
+    polling = false
     if st ~= nil then noctalia.state.set("status", st) end
   end)
   rpc("GetHealth", {}, pub("health"))
@@ -377,14 +467,15 @@ end
 
 -- ── teardown: only kill the backend WE spawned ──────────────────
 function onExit(sig)
-  if ownsBackend then
+  if ownsBackend and backendPid then
     -- SIGTERM lets the backend tear down its proxy processes cleanly.
     -- The pidfile holds "<pid> <port>". Read and validate the first field
     -- before signalling it so the port can never be mistaken for a PID.
     local cmd = "if read pid rest < " .. shellQuote(PIDFILE)
-                .. "; then case \"$pid\" in ''|*[!0-9]*) ;; *) kill \"$pid\" 2>/dev/null ;; esac; fi"
+                .. "; then if [ \"$pid\" = " .. tostring(backendPid)
+                .. " ]; then kill \"$pid\" 2>/dev/null; fi; fi"
     noctalia.runAsync(cmd)
   end
 end
 
-noctalia.setUpdateInterval(2000)
+noctalia.setUpdateInterval(1000)

@@ -18,5 +18,8 @@ Local changes on top of upstream:
 * widget right-click = connect to fastest
 * panel width 640, name truncation, no GeoIP flags
 * `translations/ru.json`
+* fail-open system-proxy recovery with an independent heartbeat guard
+* backend respawn with backoff and instance-scoped orphan cleanup
+* bootstrap readiness gate and safe shutdown ordering
 
 Details: `~/.config/opencode/skills/niri-noctalia/references/ruh-vpn-patches.md`
